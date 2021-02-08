@@ -1,4 +1,5 @@
 import re
+import traceback
 from aws_xray_sdk.core import xray_recorder
 from aws_xray_sdk.ext.util import strip_url
 from future.standard_library import install_aliases
@@ -25,7 +26,7 @@ def decorate_all_functions(function_decorator):
 
 def xray_on_call(cls, func):
     def wrapper(*args, **kw):
-        from ..query import XRayQuery, XRaySession
+        from aws_xray_sdk.ext.flask_sqlalchemy.query import XRayQuery, XRaySession
         try:
             from ...flask_sqlalchemy.query import XRaySignallingSession
             has_sql_alchemy = True
@@ -58,12 +59,23 @@ def xray_on_call(cls, func):
                 subsegment = xray_recorder.begin_subsegment(sub_name, namespace='remote')
             else:
                 subsegment = None
-        res = func(*args, **kw)
-        if subsegment is not None:
-            subsegment.set_sql(sql)
-            subsegment.put_annotation("sqlalchemy", class_name+'.'+func.__name__)
-            xray_recorder.end_subsegment()
-        return res
+        try:
+            res = func(*args, **kw)
+            return res
+        except Exception as e:
+            if subsegment is not None:
+                subsegment.add_exception(e, traceback.extract_tb(
+                    e.__traceback__
+                ))
+                subsegment.fault = True
+                subsegment.sql = sql
+            raise e
+        finally:
+            if subsegment is not None:
+                subsegment.set_sql(sql)
+                subsegment.put_annotation("sqlalchemy", class_name + '.' + func.__name__)
+                xray_recorder.end_subsegment()
+
     return wrapper
 # URL Parse output
 # scheme	0	URL scheme specifier	scheme parameter
